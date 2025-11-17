@@ -146,14 +146,7 @@ public:
           << "// -----// WarpSpec internal IR Dump After: doCodePartition\n"
           << moduleOp << "\n\n\n";
     }
-    if (!ForBlackWell) {
-      doPingPongSync(funcOp, numWarpGroups);
-      if (dumpIntermediateSteps) {
-        llvm::dbgs()
-            << "// -----// WarpSpec internal IR Dump After: doPingPongSync\n"
-            << moduleOp << "\n\n\n";
-      }
-    }
+
 
     doTokenLowering(funcOp, numWarpGroups - 1);
     if (dumpIntermediateSteps) {
@@ -161,6 +154,18 @@ public:
           << "// -----// WarpSpec internal IR Dump After: doTokenLowering\n"
           << moduleOp << "\n\n\n";
     }
+
+    // if (!ForBlackWell) {
+    llvm::dbgs()
+          << "// -----// WarpSpec internal IR Dump before: doPingPongSync\n"
+          << moduleOp << "\n\n\n";
+    doPingPongSync(funcOp, numWarpGroups);
+    if (dumpIntermediateSteps) {
+      llvm::dbgs()
+          << "// -----// WarpSpec internal IR Dump After: doPingPongSync\n"
+          << moduleOp << "\n\n\n";
+    }
+    // }
 
     triton::gpu::doLoopSchedulePreprocessing(moduleOp, builder);
     if (dumpIntermediateSteps) {
