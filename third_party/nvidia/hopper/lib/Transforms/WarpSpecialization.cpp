@@ -147,7 +147,6 @@ public:
           << moduleOp << "\n\n\n";
     }
 
-
     doTokenLowering(funcOp, numWarpGroups - 1);
     if (dumpIntermediateSteps) {
       llvm::dbgs()
@@ -155,17 +154,18 @@ public:
           << moduleOp << "\n\n\n";
     }
 
-    // if (!ForBlackWell) {
-    llvm::dbgs()
-          << "// -----// WarpSpec internal IR Dump before: doPingPongSync\n"
-          << moduleOp << "\n\n\n";
-    doPingPongSync(funcOp, numWarpGroups);
-    if (dumpIntermediateSteps) {
-      llvm::dbgs()
-          << "// -----// WarpSpec internal IR Dump After: doPingPongSync\n"
-          << moduleOp << "\n\n\n";
+    bool pingpong_auto_ws = false;
+    if (auto attr = moduleOp->getAttrOfType<BoolAttr>(triton::gpu::AttrPingPongAutoWSName)) {
+      pingpong_auto_ws = attr.getValue();
     }
-    // }
+    if (pingpong_auto_ws) {
+      doPingPongSync(funcOp, numWarpGroups);
+      if (dumpIntermediateSteps) {
+        llvm::dbgs()
+            << "// -----// WarpSpec internal IR Dump After: doPingPongSync\n"
+            << moduleOp << "\n\n\n";
+      }
+    }
 
     triton::gpu::doLoopSchedulePreprocessing(moduleOp, builder);
     if (dumpIntermediateSteps) {
