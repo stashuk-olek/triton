@@ -162,7 +162,7 @@ void WarpSchedule::serialize(scf::ForOp loop) const {
       if (partition == getRootPartition())
         return;
       op->setAttr(kPartitionAttrName,
-                 b.getI32IntegerAttr(partition->getIndex()));
+                  b.getI32IntegerAttr(partition->getIndex()));
     }
   });
   for (Partition &partition : getPartitions())

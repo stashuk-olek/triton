@@ -141,7 +141,12 @@ def _attn_fwd_inner_oss_dp(
 
     # loop over k, v and update accumulator
     for start_n in tl.range(
-        lo, hi, BLOCK_N, warp_specialize=warp_specialize, disallow_acc_multi_buffer=True, data_partition_factor=DP_FACTOR,
+            lo,
+            hi,
+            BLOCK_N,
+            warp_specialize=warp_specialize,
+            disallow_acc_multi_buffer=True,
+            data_partition_factor=DP_FACTOR,
     ):
         start_n = tl.multiple_of(start_n, BLOCK_N)
 
@@ -196,7 +201,11 @@ else:
 
 configs = [
     triton.Config(
-        {"BLOCK_M": BM, "BLOCK_N": BN, "DP_FACTOR": 2,},
+        {
+            "BLOCK_M": BM,
+            "BLOCK_N": BN,
+            "DP_FACTOR": 2,
+        },
         num_stages=s,
         num_warps=w,
         pre_hook=_host_descriptor_pre_hook,

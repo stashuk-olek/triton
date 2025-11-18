@@ -155,7 +155,8 @@ public:
     }
 
     bool pingpong_auto_ws = false;
-    if (auto attr = moduleOp->getAttrOfType<BoolAttr>(triton::gpu::AttrPingPongAutoWSName)) {
+    if (auto attr = moduleOp->getAttrOfType<BoolAttr>(
+            triton::gpu::AttrPingPongAutoWSName)) {
       pingpong_auto_ws = attr.getValue();
     }
     if (pingpong_auto_ws) {
