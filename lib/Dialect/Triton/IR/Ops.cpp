@@ -972,6 +972,11 @@ LogicalResult FpToFpOp::verify() {
       (!getRounding().has_value())) {
     return emitError("Rounding mode is required for FP downcast");
   }
+  if (getRoundingSeed().has_value() &&
+      (!getRounding().has_value() ||
+       getRounding().value() != RoundingMode::STNE)) {
+    return emitError("rounding_seed is only valid with STNE rounding mode");
+  }
   return success();
 }
 

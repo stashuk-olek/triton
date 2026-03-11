@@ -781,7 +781,10 @@ class TritonSemantic(Generic[TensorTy]):
             return ir.ROUNDING_MODE.RTNE
         if rounding_mode == 'rtz':
             return ir.ROUNDING_MODE.RTZ
-        raise ValueError(f"Invalid rounding mode: {rounding_mode}. Supported rounding modes are 'rtne' and 'rtz'.")
+        if rounding_mode == 'stne':
+            return ir.ROUNDING_MODE.STNE
+        raise ValueError(
+            f"Invalid rounding mode: {rounding_mode}. Supported rounding modes are 'rtne', 'rtz', and 'stne'.")
 
     def bitcast(self, input: TensorTy, dst_ty: tl.dtype) -> TensorTy:
         src_ty = input.type
@@ -801,7 +804,8 @@ class TritonSemantic(Generic[TensorTy]):
                              "data-type of size " + str(dst_bits))
         return self.tensor(self.builder.create_bitcast(input.handle, dst_ty.to_ir(self.builder)), dst_ty)
 
-    def cast(self, input: TensorTy, dst_ty: tl.dtype, fp_downcast_rounding: Optional[str] = None) -> TensorTy:
+    def cast(self, input: TensorTy, dst_ty: tl.dtype, fp_downcast_rounding: Optional[str] = None,
+             rounding_seed: Optional[int] = None) -> TensorTy:
         src_ty = input.type
         src_sca_ty = src_ty.scalar
         dst_sca_ty = dst_ty.scalar
@@ -834,7 +838,8 @@ class TritonSemantic(Generic[TensorTy]):
            (src_sca_ty.is_floating() and dst_sca_ty.is_fp8()) or \
            use_custom_rounding:
             return self.tensor(
-                self.builder.create_fp_to_fp(input.handle, dst_ty.to_ir(self.builder), fp_downcast_rounding), dst_ty)
+                self.builder.create_fp_to_fp(input.handle, dst_ty.to_ir(self.builder), fp_downcast_rounding,
+                                             rounding_seed), dst_ty)
 
         # bf16 <=> (not fp32)
         if (src_sca_ty.is_fp16() and not dst_sca_ty.is_fp32()) or \

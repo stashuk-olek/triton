@@ -338,6 +338,50 @@ static ConverterT makeConverterFromPtx(const std::string &ptxAsm, Type inType,
   return converter;
 }
 
+static Value stochasticBias(Location loc, ConversionPatternRewriter &rewriter,
+                            const Value &v, int truncBits,
+                            std::optional<int32_t> seed) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  Value intVal = b.bitcast(v, i32_ty);
+
+  Value expMask = b.i32_val(0x7F800000);
+  Value expBits = b.and_(intVal, expMask);
+  Value isInfNan = b.icmp_eq(expBits, expMask);
+
+  Value absBits = b.and_(intVal, b.i32_val(0x7FFFFFFF));
+  Value isZero = b.icmp_eq(absBits, b.i32_val(0));
+
+  Value entropy;
+  if (seed.has_value()) {
+    entropy = b.i32_val(seed.value());
+  } else {
+    Value cycle64 = LLVM::createLLVMIntrinsicCallOp(
+                        rewriter, loc, "llvm.readcyclecounter", i64_ty, {})
+                        .getResult(0);
+    entropy = b.trunc(i32_ty, cycle64);
+  }
+
+  Value tid = getThreadId(rewriter, loc);
+  entropy = b.xor_(entropy, tid);
+  entropy = b.xor_(entropy, intVal);
+
+  Value tmp = b.shl(entropy, b.i32_val(13));
+  entropy = b.xor_(entropy, tmp);
+  tmp = b.lshr(entropy, b.i32_val(17));
+  entropy = b.xor_(entropy, tmp);
+  tmp = b.shl(entropy, b.i32_val(5));
+  entropy = b.xor_(entropy, tmp);
+
+  Value mask = b.i32_val((1 << truncBits) - 1);
+  Value randomBits = b.and_(entropy, mask);
+  Value biasedInt = b.add(intVal, randomBits);
+
+  Value skipBias = b.or_(isInfNan, isZero);
+  biasedInt = b.select(skipBias, intVal, biasedInt);
+
+  return b.bitcast(biasedInt, f32_ty);
+}
+
 // Attempts to use vectorized conversions via inline PTX when possible.
 struct FpToFpOpConversion
     : public ElementwiseOpConversionBase<FpToFpOp, FpToFpOpConversion> {
@@ -359,7 +403,23 @@ struct FpToFpOpConversion
 
   static Value convertFp32ToBf16(Location loc,
                                  ConversionPatternRewriter &rewriter,
-                                 const Value &v, const RoundingMode rounding) {
+                                 const Value &v, const RoundingMode rounding,
+                                 int computeCapability = 0,
+                                 std::optional<int32_t> seed = std::nullopt) {
+    if (rounding == RoundingMode::STNE) {
+      if (computeCapability >= 100) {
+        PTXBuilder builder;
+        auto &cvt = *builder.create("cvt.rs.bf16.f32");
+        auto res = builder.newOperand("=h");
+        auto operand = builder.newOperand(v, "r");
+        cvt(res, operand);
+        return builder.launch(rewriter, loc, bf16_ty, false);
+      }
+      Value biased = stochasticBias(loc, rewriter, v, 16, seed);
+      return LLVM::createLLVMIntrinsicCallOp(
+                 rewriter, loc, "llvm.nvvm.f2bf16.rz", bf16_ty, {biased})
+          .getResult(0);
+    }
     StringRef name;
     switch (rounding) {
     case RoundingMode::RTNE:
@@ -381,7 +441,26 @@ struct FpToFpOpConversion
 
   static Value convertFp32ToFp16(Location loc,
                                  ConversionPatternRewriter &rewriter,
-                                 const Value &v, const RoundingMode rounding) {
+                                 const Value &v, const RoundingMode rounding,
+                                 int computeCapability = 0,
+                                 std::optional<int32_t> seed = std::nullopt) {
+    if (rounding == RoundingMode::STNE) {
+      if (computeCapability >= 100) {
+        PTXBuilder builder;
+        auto &cvt = *builder.create("cvt.rs.f16.f32");
+        auto res = builder.newOperand("=h");
+        auto operand = builder.newOperand(v, "r");
+        cvt(res, operand);
+        return builder.launch(rewriter, loc, f16_ty, false);
+      }
+      Value biased = stochasticBias(loc, rewriter, v, 13, seed);
+      PTXBuilder builder;
+      auto &cvt = *builder.create("cvt.rz.f16.f32");
+      auto res = builder.newOperand("=h");
+      auto operand = builder.newOperand(biased, "r");
+      cvt(res, operand);
+      return builder.launch(rewriter, loc, f16_ty, false);
+    }
     PTXBuilder builder;
     StringRef ptx;
     switch (rounding) {
@@ -476,13 +555,17 @@ struct FpToFpOpConversion
     auto dstElementType = getElementType(op.getResult());
     auto roundingMode = op.getRounding();
 
+    std::optional<int32_t> roundingSeed;
+    if (auto seedAttr = op.getRoundingSeedAttr())
+      roundingSeed = seedAttr.getInt();
+
     if (llvm::isa<Float8E5M2Type, Float8E4M3FNType>(dstElementType)) {
       assert(roundingMode.has_value() &&
              "Rounding mode must be specified for convertsions to fp8");
 
-      // For now only RTNE is supported for conversions from fp16 to fp8
       if (!srcElementType.isF32() &&
-          roundingMode.value() != RoundingMode::RTNE) {
+          roundingMode.value() != RoundingMode::RTNE &&
+          roundingMode.value() != RoundingMode::STNE) {
         llvm::report_fatal_error(
             "Unsupported rounding mode for conversion to fp8: " +
             stringifyRoundingMode(roundingMode.value()) + "\n");
@@ -500,8 +583,9 @@ struct FpToFpOpConversion
              "rounding mode must be specified for fp32->fp16 conversion");
       SmallVector<Value> outVals;
       for (Value v : operands[0]) {
-        outVals.push_back(
-            convertFp32ToFp16(loc, rewriter, v, roundingMode.value()));
+        outVals.push_back(convertFp32ToFp16(loc, rewriter, v,
+                                            roundingMode.value(),
+                                            computeCapability, roundingSeed));
       }
       return outVals;
     }
@@ -511,9 +595,59 @@ struct FpToFpOpConversion
              "rounding mode must be specified for fp32->bf16 conversion");
       SmallVector<Value> outVals;
       for (Value v : operands[0]) {
-        outVals.push_back(
-            convertFp32ToBf16(loc, rewriter, v, roundingMode.value()));
+        outVals.push_back(convertFp32ToBf16(loc, rewriter, v,
+                                            roundingMode.value(),
+                                            computeCapability, roundingSeed));
       }
+      return outVals;
+    }
+
+    if (roundingMode.has_value() &&
+        roundingMode.value() == RoundingMode::STNE &&
+        llvm::isa<Float8E5M2Type, Float8E4M3FNType>(dstElementType)) {
+      int truncBits;
+      if (srcElementType.isF32()) {
+        truncBits = llvm::isa<Float8E4M3FNType>(dstElementType) ? 20 : 21;
+      } else {
+        truncBits = llvm::isa<Float8E4M3FNType>(dstElementType) ? 7 : 8;
+      }
+
+      SmallVector<Value> biasedVals;
+      for (unsigned i = 0; i < std::min((size_t)1, operands.size()); i++) {
+        Value v = operands[i][0];
+        if (srcElementType.isF16())
+          v = convertFp16ToFp32(loc, rewriter, v);
+        v = stochasticBias(loc, rewriter, v, truncBits, roundingSeed);
+        biasedVals.push_back(v);
+      }
+
+      auto rtneMode = RoundingMode::RTNE;
+      bool useFP16IntermediateSrc =
+          srcElementType.isF32() &&
+          (!(computeCapability >= 90 &&
+             llvm::isa<Float8E4M3FNType, Float8E5M2Type>(dstElementType)));
+      Type srcType = useFP16IntermediateSrc ? f16_ty : f32_ty;
+      Type dstType = dstElementType;
+      auto [cvtFunc, numElements] =
+          getConversionFunc(srcType, dstType, rtneMode);
+
+      SmallVector<Value> inVals;
+      for (auto &v : biasedVals)
+        inVals.push_back(v);
+      for (unsigned i = inVals.size(); i < numElements; i++) {
+        for (unsigned j = inVals.size();
+             j < std::min(numElements, operands.size()); j++)
+          inVals.push_back(operands[j][0]);
+      }
+
+      if (useFP16IntermediateSrc) {
+        for (Value &v : inVals)
+          v = convertFp32ToFp16(loc, rewriter, v, RoundingMode::RTZ);
+      }
+      inVals.resize(numElements, b.undef(typeConverter->convertType(srcType)));
+      SmallVector<Value> outVals = cvtFunc(loc, rewriter, inVals);
+      assert(outVals.size() == inVals.size());
+      outVals.resize(std::min(numElements, operands.size()));
       return outVals;
     }
 

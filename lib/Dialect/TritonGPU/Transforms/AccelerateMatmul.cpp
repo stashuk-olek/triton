@@ -902,7 +902,9 @@ static Value promoteOperand(OpBuilder &builder, Location loc, Value operand,
   Type operandElType =
       cast<RankedTensorType>(operand.getType()).getElementType();
   if (type::isFloat8(operandElType)) {
-    return FpToFpOp::create(builder, loc, tensorPromotedType, operand);
+    return FpToFpOp::create(builder, loc, tensorPromotedType, operand,
+                            /*rounding=*/RoundingModeAttr{},
+                            /*rounding_seed=*/IntegerAttr{});
   }
   return arith::ExtFOp::create(builder, loc, tensorPromotedType, operand);
 }

@@ -92,12 +92,13 @@ def TT_FpToFpOp : TT_Op<"fp_to_fp", [Elementwise,
 
     let arguments = (
       ins TT_FloatLike:$src,
-      OptionalAttr<TT_RoundingModeAttr>:$rounding
+      OptionalAttr<TT_RoundingModeAttr>:$rounding,
+      OptionalAttr<I32Attr>:$rounding_seed
     );
 
     let results = (outs TT_FloatLike:$result);
 
-    let assemblyFormat = "$src attr-dict  (`,` `rounding` `=` $rounding^)? `:` type($src) `->` type($result)";
+    let assemblyFormat = "$src attr-dict  (`,` `rounding` `=` $rounding^)? (`,` `seed` `=` $rounding_seed^)? `:` type($src) `->` type($result)";
 
     let hasVerifier = 1;
 

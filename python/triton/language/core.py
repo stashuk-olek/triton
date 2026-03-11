@@ -1126,11 +1126,12 @@ class tensor(base_value):
         assert False, "Transposition must be created by the AST Visitor"
 
     @builtin
-    def to(self, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcast: bool = False, _semantic=None):
+    def to(self, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcast: bool = False, _rounding_seed=None,
+           _semantic=None):
         """
         Alias for :py:func:`tensor.cast`.
         """
-        return cast(self, dtype, fp_downcast_rounding, bitcast, _semantic=_semantic)
+        return cast(self, dtype, fp_downcast_rounding, bitcast, _rounding_seed=_rounding_seed, _semantic=_semantic)
 
     # Type stubs for functions added by the _tensor_member_fn decorator.
     # (Unfortunately these can't be created automatically.)
@@ -2232,7 +2233,8 @@ def expand_dims(input, axis, _semantic=None):
 
 @_tensor_member_fn
 @builtin
-def cast(input, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcast: bool = False, _semantic=None):
+def cast(input, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcast: bool = False, _rounding_seed=None,
+         _semantic=None):
     """
     Casts a tensor to the given :code:`dtype`.
 
@@ -2242,7 +2244,8 @@ def cast(input, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcas
         floating-point values. This parameter is only used when self is a
         floating-point tensor and dtype is a floating-point type with a
         smaller bitwidth. Supported values are :code:`"rtne"` (round to
-        nearest, ties to even) and :code:`"rtz"` (round towards zero).
+        nearest, ties to even), :code:`"rtz"` (round towards zero), and
+        :code:`"stne"` (stochastic rounding to nearest).
     :type fp_downcast_rounding: str, optional
     :param bitcast: If true, the tensor is bitcasted to the given
         :code:`dtype`, instead of being numerically casted.
@@ -2252,9 +2255,10 @@ def cast(input, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcas
     dtype = _unwrap_if_constexpr(dtype)
     fp_downcast_rounding = _unwrap_if_constexpr(fp_downcast_rounding)
     bitcast = _unwrap_if_constexpr(bitcast)
+    _rounding_seed = _unwrap_if_constexpr(_rounding_seed)
     if bitcast:
         return _semantic.bitcast(input, dtype)
-    return _semantic.cast(input, dtype, fp_downcast_rounding)
+    return _semantic.cast(input, dtype, fp_downcast_rounding, rounding_seed=_rounding_seed)
 
 
 # -----------------------

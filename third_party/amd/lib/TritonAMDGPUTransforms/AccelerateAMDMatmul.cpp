@@ -439,7 +439,8 @@ Value convertAndCastTensor(PatternRewriter &rewriter, Value value,
             RoundingModeAttr::get(rewriter.getContext(), RoundingMode::RTNE);
       }
       castedTensor = tt::FpToFpOp::create(rewriter, loc, castedType,
-                                          convertedTensor, rmode);
+                                          convertedTensor, rmode,
+                                          /*rounding_seed=*/IntegerAttr{});
     }
   }
   return castedTensor;
@@ -889,8 +890,11 @@ public:
           vType.getShape(),
           useFp16 ? rewriter.getF16Type() : rewriter.getBF16Type(),
           newVEncoding);
-      return cast<TensorValue>(
-          FpToFpOp::create(rewriter, v.getLoc(), upcastedType, v).getResult());
+      return cast<TensorValue>(FpToFpOp::create(rewriter, v.getLoc(),
+                                                upcastedType, v,
+                                                /*rounding=*/RoundingModeAttr{},
+                                                /*rounding_seed=*/IntegerAttr{})
+                                   .getResult());
     };
     a = upcastForMMA(a, 0, aElemType);
     b = upcastForMMA(b, 1, bElemType);
@@ -1446,7 +1450,9 @@ static Value promoteOperand(OpBuilder &builder, Location loc, Value operand,
                             Type promotedType) {
   Type tensorPromotedType = cast<RankedTensorType>(operand.getType())
                                 .cloneWith(std::nullopt, promotedType);
-  return triton::FpToFpOp::create(builder, loc, tensorPromotedType, operand);
+  return triton::FpToFpOp::create(builder, loc, tensorPromotedType, operand,
+                                  /*rounding=*/triton::RoundingModeAttr{},
+                                  /*rounding_seed=*/IntegerAttr{});
 }
 
 // Promote operands of dot op if the existing combination is not natively
@@ -1686,7 +1692,8 @@ public:
         rmode =
             RoundingModeAttr::get(rewriter.getContext(), RoundingMode::RTNE);
       }
-      return FpToFpOp::create(rewriter, loc, dstTy, v, rmode);
+      return FpToFpOp::create(rewriter, loc, dstTy, v, rmode,
+                              /*rounding_seed=*/IntegerAttr{});
     }
     if (!isFloat(srcElTy) && isFloat(dstElTy))
       return arith::SIToFPOp::create(rewriter, loc, dstTy, v);

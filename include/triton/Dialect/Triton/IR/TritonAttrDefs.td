@@ -109,6 +109,7 @@ def TT_RoundingModeAttr : I32EnumAttr<
     [
         I32EnumAttrCase<"RTZ", 0, "rtz">,
         I32EnumAttrCase<"RTNE", 1, "rtne">,
+        I32EnumAttrCase<"STNE", 2, "stne">,
     ]> {
     let cppNamespace = "::mlir::triton";
 }

@@ -195,7 +195,10 @@ DecomposeScaledBlocked::scaleArg(PatternRewriter &rewriter,
   } else {
     auto vType16 = v.getType().clone(computeType);
     v = cast<TypedValue<RankedTensorType>>(
-        FpToFpOp::create(rewriter, loc, vType16, v).getResult());
+        FpToFpOp::create(rewriter, loc, vType16, v,
+                         /*rounding=*/RoundingModeAttr{},
+                         /*rounding_seed=*/IntegerAttr{})
+            .getResult());
   }
   if (!scale)
     return v;

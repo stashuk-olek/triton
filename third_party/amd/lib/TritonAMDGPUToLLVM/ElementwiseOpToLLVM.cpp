@@ -1830,6 +1830,51 @@ static ConverterT Fp16_to_Fp8E4M3FNUZ(AMD::ISAFamily isaFamily) {
 //===----------------------------------------------------------------------===//
 
 // Attempts to use vectorized conversions via inline PTX when possible.
+static Value stochasticBiasAMD(Location loc,
+                               ConversionPatternRewriter &rewriter,
+                               const Value &v, int truncBits,
+                               std::optional<int32_t> seed) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  Value intVal = b.bitcast(v, i32_ty);
+
+  Value expMask = b.i32_val(0x7F800000);
+  Value expBits = b.and_(intVal, expMask);
+  Value isInfNan = b.icmp_eq(expBits, expMask);
+
+  Value absBits = b.and_(intVal, b.i32_val(0x7FFFFFFF));
+  Value isZero = b.icmp_eq(absBits, b.i32_val(0));
+
+  Value entropy;
+  if (seed.has_value()) {
+    entropy = b.i32_val(seed.value());
+  } else {
+    Value cycle64 = LLVM::createLLVMIntrinsicCallOp(
+                        rewriter, loc, "llvm.readcyclecounter", i64_ty, {})
+                        .getResult(0);
+    entropy = b.trunc(i32_ty, cycle64);
+  }
+
+  Value tid = getThreadId(rewriter, loc);
+  entropy = b.xor_(entropy, tid);
+  entropy = b.xor_(entropy, intVal);
+
+  Value tmp = b.shl(i32_ty, entropy, b.i32_val(13));
+  entropy = b.xor_(entropy, tmp);
+  tmp = b.lshr(i32_ty, entropy, b.i32_val(17));
+  entropy = b.xor_(entropy, tmp);
+  tmp = b.shl(i32_ty, entropy, b.i32_val(5));
+  entropy = b.xor_(entropy, tmp);
+
+  Value mask = b.i32_val((1 << truncBits) - 1);
+  Value randomBits = b.and_(entropy, mask);
+  Value biasedInt = b.add(intVal, randomBits);
+
+  Value skipBias = b.or_(isInfNan, isZero);
+  biasedInt = b.select(skipBias, intVal, biasedInt);
+
+  return b.bitcast(biasedInt, f32_ty);
+}
+
 struct FpToFpOpConversion
     : public ElementwiseOpConversionBase<triton::FpToFpOp, FpToFpOpConversion> {
   explicit FpToFpOpConversion(LLVMTypeConverter &typeConverter,
@@ -1969,11 +2014,33 @@ struct FpToFpOpConversion
     auto srcElementType = getElementType(op.getSrc());
     auto dstElementType = getElementType(op.getResult());
 
+    std::optional<int32_t> roundingSeed;
+    if (auto seedAttr = op.getRoundingSeedAttr())
+      roundingSeed = seedAttr.getInt();
+
     auto roundingMode = op.getRounding();
     if (srcElementType.isF32() &&
         (dstElementType.isF16() || dstElementType.isBF16())) {
       assert(roundingMode.has_value() &&
              "rounding mode must be specified for fp32->fp16/bf16 conversion");
+
+      if (roundingMode.value() == RoundingMode::STNE) {
+        int truncBits = dstElementType.isF16() ? 13 : 16;
+        SmallVector<Value> outVals;
+        for (Value v : operands[0]) {
+          Value biased =
+              stochasticBiasAMD(loc, rewriter, v, truncBits, roundingSeed);
+          if (dstElementType.isF16()) {
+            outVals.push_back(
+                LLVM::FPTruncOp::create(rewriter, loc, f16_ty, biased));
+          } else {
+            outVals.push_back(
+                convertFp32ToBf16(loc, rewriter, biased, RoundingMode::RTZ));
+          }
+        }
+        return outVals;
+      }
+
       if (roundingMode.value() == RoundingMode::RTNE) {
         return Fp32_to_F16_RTNE(loc, rewriter, srcElementType, dstElementType,
                                 operands, isaFamily);
@@ -1982,6 +2049,63 @@ struct FpToFpOpConversion
     if (srcElementType.isF32() && dstElementType.isBF16()) {
       return {
           convertFp32ToBf16(loc, rewriter, operands[0][0], RoundingMode::RTZ)};
+    }
+
+    if (roundingMode.has_value() &&
+        roundingMode.value() == RoundingMode::STNE &&
+        (llvm::isa<Float8E5M2Type, Float8E4M3FNType, Float8E5M2FNUZType,
+                   Float8E4M3FNUZType>(dstElementType))) {
+      int truncBits;
+      if (srcElementType.isF32()) {
+        truncBits =
+            llvm::isa<Float8E4M3FNType, Float8E4M3FNUZType>(dstElementType)
+                ? 20
+                : 21;
+      } else if (srcElementType.isF16()) {
+        truncBits =
+            llvm::isa<Float8E4M3FNType, Float8E4M3FNUZType>(dstElementType) ? 7
+                                                                            : 8;
+      } else {
+        truncBits =
+            llvm::isa<Float8E4M3FNType, Float8E4M3FNUZType>(dstElementType)
+                ? 20
+                : 21;
+      }
+
+      size_t numElements =
+          getNumElements(srcElementType, dstElementType, RoundingMode::RTNE);
+
+      SmallVector<Value> inVals;
+      for (unsigned i = 0; i < std::min(numElements, operands.size()); i++) {
+        Value v = operands[i][0];
+        if (srcElementType.isF16())
+          v = cvtFp16ToFp32(loc, rewriter, v);
+        else if (srcElementType.isBF16())
+          v = convertBf16ToFp32(loc, rewriter, v);
+        v = stochasticBiasAMD(loc, rewriter, v, truncBits, roundingSeed);
+        if (srcElementType.isF16())
+          v = LLVM::AMD::cvtFp32ToFp16RTNE_oneValue(loc, rewriter, v);
+        inVals.push_back(v);
+      }
+
+      Type srcType = srcElementType.isF32() ? f16_ty : srcElementType;
+      if (srcElementType.isF32()) {
+        for (Value &v : inVals)
+          v = LLVM::AMD::cvtFp32ToFp16RTNE_oneValue(loc, rewriter, v);
+      }
+
+      inVals.resize(numElements, b.undef(typeConverter->convertType(srcType)));
+      auto getCvtFunc =
+          getConversionFunc(srcType, dstElementType, RoundingMode::RTNE);
+      if (failed(getCvtFunc)) {
+        op->emitError("Unsupported stochastic rounding conversion from ")
+            << srcElementType << " to " << dstElementType;
+        return {};
+      }
+      auto cvtFunc = getCvtFunc.value();
+      SmallVector<Value> outVals = cvtFunc(loc, rewriter, inVals);
+      outVals.resize(std::min(numElements, operands.size()));
+      return outVals;
     }
 
     size_t numElements =

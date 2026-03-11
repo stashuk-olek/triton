@@ -298,7 +298,8 @@ void init_triton_ir(py::module &&m) {
 
   py::enum_<RoundingMode>(m, "ROUNDING_MODE", py::module_local())
       .value("RTZ", RoundingMode::RTZ)
-      .value("RTNE", RoundingMode::RTNE);
+      .value("RTNE", RoundingMode::RTNE)
+      .value("STNE", RoundingMode::STNE);
 
   py::enum_<PropagateNan>(m, "PROPAGATE_NAN", py::module_local())
       .value("NONE", PropagateNan::NONE)
@@ -1175,17 +1176,25 @@ void init_triton_ir(py::module &&m) {
 
       // Cast instructions
       // Conversions for custom FP types (FP8 and non-standard rounding modes)
-      .def("create_fp_to_fp",
-           [](TritonOpBuilder &self, Value &src, Type &dstType,
-              std::optional<RoundingMode> roundingMode) -> Value {
-             if (roundingMode.has_value())
-               return self.create<FpToFpOp>(
-                   dstType, src,
-                   RoundingModeAttr::get(self.getBuilder().getContext(),
-                                         roundingMode.value()));
-             else
-               return self.create<FpToFpOp>(dstType, src);
-           })
+      .def(
+          "create_fp_to_fp",
+          [](TritonOpBuilder &self, Value &src, Type &dstType,
+             std::optional<RoundingMode> roundingMode,
+             std::optional<int32_t> roundingSeed) -> Value {
+            auto ctx = self.getBuilder().getContext();
+            RoundingModeAttr roundingAttr =
+                roundingMode.has_value()
+                    ? RoundingModeAttr::get(ctx, roundingMode.value())
+                    : RoundingModeAttr{};
+            IntegerAttr seedAttr =
+                roundingSeed.has_value()
+                    ? IntegerAttr::get(IntegerType::get(ctx, 32),
+                                       roundingSeed.value())
+                    : IntegerAttr{};
+            return self.create<FpToFpOp>(dstType, src, roundingAttr, seedAttr);
+          },
+          py::arg("src"), py::arg("dstType"), py::arg("roundingMode"),
+          py::arg("roundingSeed") = py::none())
       // Conversions for standard LLVM builtin types
       .def("create_bitcast",
            [](TritonOpBuilder &self, Value &src, Type &dstType) -> Value {
